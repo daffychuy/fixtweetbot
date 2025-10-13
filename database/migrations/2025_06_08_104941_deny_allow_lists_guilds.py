@@ -10,15 +10,14 @@ class DenyAllowListsGuilds(Migration):
         """
         # Step 1: Add new columns to guilds
         with self.schema.table("guilds") as table:
-            # JSON column without default (MySQL-compatible)
-            table.json("keywords").index().after("id")
-
-            # Boolean columns with defaults are fine
+            table.json("keywords").after("id")  # <-- create the column first
+            
             table.boolean("keywords_use_allow_list").index().default(False).after("keywords")
             table.boolean("text_channels_use_allow_list").index().default(False).after("keywords_use_allow_list")
             table.boolean("members_use_allow_list").index().default(False).after("text_channels_use_allow_list")
             table.boolean("roles_use_allow_list").index().default(False).after("members_use_allow_list")
             table.boolean("roles_use_any_rule").index().default(False).after("roles_use_allow_list")
+
 
         # Step 2: Migrate existing data if needed
         guilds = QueryBuilder().on(self.connection).table("guilds")
