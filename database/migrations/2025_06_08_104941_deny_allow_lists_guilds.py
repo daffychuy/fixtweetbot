@@ -8,15 +8,19 @@ class DenyAllowListsGuilds(Migration):
         """
         Run the migrations.
         """
+        # Step 1: Add new columns to guilds
         with self.schema.table("guilds") as table:
-            table.json("keywords").index().default("[\"fxignore\"]").after("id")
+            # JSON column without default (MySQL-compatible)
+            table.json("keywords").index().after("id")
 
+            # Boolean columns with defaults are fine
             table.boolean("keywords_use_allow_list").index().default(False).after("keywords")
             table.boolean("text_channels_use_allow_list").index().default(False).after("keywords_use_allow_list")
             table.boolean("members_use_allow_list").index().default(False).after("text_channels_use_allow_list")
             table.boolean("roles_use_allow_list").index().default(False).after("members_use_allow_list")
             table.boolean("roles_use_any_rule").index().default(False).after("roles_use_allow_list")
 
+        # Step 2: Migrate existing data if needed
         guilds = QueryBuilder().on(self.connection).table("guilds")
         guilds.where("default_channel_state", False).update({
             "text_channels_use_allow_list": True
@@ -28,6 +32,7 @@ class DenyAllowListsGuilds(Migration):
             "roles_use_allow_list": True
         })
 
+        # Step 3: Drop old columns
         with self.schema.table("guilds") as table:
             table.drop_column("default_channel_state")
             table.drop_column("default_member_state")
@@ -37,12 +42,13 @@ class DenyAllowListsGuilds(Migration):
         """
         Revert the migrations.
         """
-
+        # Step 1: Restore old boolean columns
         with self.schema.table("guilds") as table:
             table.boolean("default_channel_state").default(True).after("instagram")
             table.boolean("default_member_state").default(True).after("default_channel_state")
             table.boolean("default_role_state").default(True).after("default_member_state")
 
+        # Step 2: Migrate data back if needed
         guilds = QueryBuilder().on(self.connection).table("guilds")
         guilds.where("text_channels_use_allow_list", True).update({
             "default_channel_state": False
@@ -54,6 +60,7 @@ class DenyAllowListsGuilds(Migration):
             "default_role_state": False
         })
 
+        # Step 3: Drop new columns
         with self.schema.table("guilds") as table:
             table.drop_column("keywords")
             table.drop_column("keywords_use_allow_list")
