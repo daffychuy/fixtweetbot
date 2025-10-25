@@ -65,7 +65,7 @@ class Setup(discore.Cog,
         if fixed_links_nb == 0:
             return
 
-        activity = discore.CustomActivity(f"Fixing {fixed_links_nb} links per day")
+        activity = discore.CustomActivity(f"Fixing {fixed_links_nb} links per day where fixtweetbot can't")
         _logger.info(f"[ACTIVITY] {activity}")
         await self.bot.change_presence(activity=activity)
 
