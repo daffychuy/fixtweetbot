@@ -9,10 +9,16 @@ import discore
 
 from database.models.DiscordRepresentation import DiscordRepresentation
 
+from database.models.Lock import Lock
+import uuid
+import os
+import datetime as _dt
+
 __all__ = (
     't', 'translate', 'object_format', 'edit_callback', 'is_premium',
     'is_sku', 'format_perms', 'is_missing_perm', 'I18nTranslator', 'tstr',
-    'group_join', 'l', 'GuildChild', 'HybridElement', 'reply_to_member'
+    'group_join', 'l', 'GuildChild', 'HybridElement', 'reply_to_member',
+    'acquire_lock', 'release_lock', 'INSTANCE_ID'
 )
 
 from database.models.Guild import Guild
@@ -335,3 +341,29 @@ def reply_to_member(
     if not (any if guild.roles_use_any_rule else all)(r.enabled(guild) for r in roles):
         return False
     return True
+
+
+# Unique identifier for this running instance (pod/process)
+INSTANCE_ID = os.environ.get('POD_NAME') or uuid.uuid4().hex
+
+
+def acquire_lock(key: str, ttl_seconds: int = 30) -> bool:
+    """Acquire a distributed lock using the database.
+
+    The lock key should be unique for the resource you want to protect (e.g. message id).
+    Returns True if the lock was successfully acquired by this instance, False otherwise.
+    """
+    owner = INSTANCE_ID
+    try:
+        return Lock.acquire(str(key), owner, ttl_seconds)
+    except Exception:
+        return False
+
+
+def release_lock(key: str) -> bool:
+    """Release a previously acquired lock owned by this instance."""
+    owner = INSTANCE_ID
+    try:
+        return Lock.release(str(key), owner)
+    except Exception:
+        return False

@@ -123,13 +123,27 @@ async def send_fixed_links(fixed_links: list[str], guild: Guild, original_messag
     :return: None
     """
 
+    # Prevent multiple pods replying to the same message by acquiring a DB-backed lock
+    lock_key = f"fix:{original_message.id}"
+    # TTL should be long enough for the full send operation; choose 60s by default
+    if not acquire_lock(lock_key, ttl_seconds=60):
+        # Another instance is handling this message or locking not available
+        _logger.debug(f"Could not acquire lock for message {original_message.id}; skipping send")
+        return
+
     messages = group_join(fixed_links, 2000)
+    try:
+        if guild.reply_to_message:
+            await discore.fallback_reply(original_message, messages.pop(0), silent=guild.reply_silently)
 
-    if guild.reply_to_message:
-        await discore.fallback_reply(original_message, messages.pop(0), silent=guild.reply_silently)
-
-    for message in messages:
-        await original_message.channel.send(message, silent=guild.reply_silently)
+        for message in messages:
+            await original_message.channel.send(message, silent=guild.reply_silently)
+    finally:
+        # Best-effort release; if it fails the lock will expire
+        try:
+            release_lock(lock_key)
+        except Exception as e:
+            _logger.debug(f"Failed to release lock for key={lock_key}: {e}")
 
 
 async def edit_original_message(guild: Guild, message: discore.Message, permissions: discore.Permissions) -> None:
