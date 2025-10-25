@@ -27,26 +27,42 @@ class DataElements:
     """
 
     def __init__(self, interaction: discore.Interaction):
+        if not interaction or not interaction.guild:
+            raise ValueError("Interaction and guild are required for DataElements")
+            
         self.guild = HybridElement(interaction.guild, Guild)
-        self.member = HybridElement(interaction.user, Member, guild=self.guild)
-        self.channel = HybridElement(interaction.channel, TextChannel, guild=self.guild)
-        self.role = HybridElement(interaction.user.top_role, Role, guild=self.guild)
-        self.roles = [HybridElement(role, Role, guild=self.guild) for role in interaction.user.roles]
+        self.member = HybridElement(interaction.user, Member, guild=self.guild) if interaction.user else None
+        self.channel = HybridElement(interaction.channel, TextChannel, guild=self.guild) if interaction.channel else None
+        self.role = HybridElement(interaction.user.top_role, Role, guild=self.guild) if interaction.user and interaction.user.top_role else None
+        self.roles = [HybridElement(role, Role, guild=self.guild) for role in (interaction.user.roles if interaction.user else [])]
 
     def refresh(self):
         """
         Refresh the data elements
         :return: None
         """
-
-        self.guild.db_object = self.guild.db_object.fresh()
-        self.member.db_object = self.member.db_object.fresh()
-        self.channel.db_object = self.channel.db_object.fresh()
-        self.role.db_object = self.role.db_object.fresh()
-        self.roles.clear()
-        self.roles.extend(
-            HybridElement(role, Role, guild=self.guild) for role in self.member.discord_object.roles
-        )
+        try:
+            if self.guild and self.guild.db_object:
+                self.guild.db_object = self.guild.db_object.fresh()
+            
+            if self.member and self.member.db_object:
+                self.member.db_object = self.member.db_object.fresh()
+            
+            if self.channel and self.channel.db_object:
+                self.channel.db_object = self.channel.db_object.fresh()
+            
+            if self.role and self.role.db_object:
+                self.role.db_object = self.role.db_object.fresh()
+            
+            self.roles.clear()
+            if self.member and self.member.discord_object and self.member.discord_object.roles:
+                self.roles.extend(
+                    HybridElement(role, Role, guild=self.guild) 
+                    for role in self.member.discord_object.roles
+                )
+        except Exception as e:
+            # Log the error but don't crash
+            print(f"[ERROR] Failed to refresh data elements: {str(e)}")
 
 
 class BaseSetting:
@@ -935,9 +951,9 @@ class KeywordsSetting(BaseSetting):
             ctx: DataElements
     ):
         super().__init__(interaction, view, ctx)
-        self.keywords = self.ctx.guild.keywords
+        self.keywords = self.ctx.guild.keywords if self.ctx.guild else []
         self.selected_index: Optional[int] = None
-        self.use_allow_list = self.ctx.guild.keywords_use_allow_list
+        self.use_allow_list = self.ctx.guild.keywords_use_allow_list if self.ctx.guild else False
 
     @property
     async def embed(self) -> discore.Embed:
@@ -977,17 +993,18 @@ class KeywordsSetting(BaseSetting):
             placeholder=t('settings.keywords.button.placeholder'),
             options=options,
             custom_id='select_keyword',
-            disabled=not self.keywords
+            disabled=not (self.keywords and len(self.keywords) > 0)
         )
         edit_callback(select, self.view, self.select_keyword)
-        if len(self.keywords) >= 3 and not is_premium(self.interaction):
+        keywords_count = len(self.keywords) if self.keywords else 0
+        if keywords_count >= 3 and not is_premium(self.interaction):
             add_button = discore.ui.Button(
                 style=discore.ButtonStyle.primary,
                 label=t('settings.keywords.button.premium'),
                 custom_id='add_keyword',
                 disabled=True
             )
-        elif len(self.keywords) >= 25:
+        elif keywords_count >= 25:
             add_button = discore.ui.Button(
                 style=discore.ButtonStyle.primary,
                 label=t('settings.keywords.button.max'),
@@ -1826,38 +1843,75 @@ class SettingsView(discore.ui.View):
         Build the interaction response (items and embed)
         :return: self
         """
-        await self._build_items()
-        default_embed = discore.Embed(
-            title=t('settings.title'),
-            description=t('settings.description')
-        )
-        discore.set_embed_footer(self.bot, default_embed)
-        self.embed = await self.settings[self.selected_id].embed if self.selected_id else default_embed
-        return self
+        try:
+            await self._build_items()
+            default_embed = discore.Embed(
+                title=t('settings.title'),
+                description=t('settings.description')
+            )
+            
+            if hasattr(self, 'bot'):
+                discore.set_embed_footer(self.bot, default_embed)
+                
+            if self.selected_id and self.selected_id in self.settings:
+                try:
+                    self.embed = await self.settings[self.selected_id].embed
+                except Exception as e:
+                    print(f"[ERROR] Failed to get embed for setting {self.selected_id}: {str(e)}")
+                    self.embed = default_embed
+            else:
+                self.embed = default_embed
+                
+            return self
+        except Exception as e:
+            print(f"[ERROR] Failed to build view: {str(e)}")
+            raise
 
     async def _build_items(self) -> Self:
         """
         Build the view items
         :return: self
         """
-        self.clear_items()
+        try:
+            self.clear_items()
 
-        if self.selected_id is not None:
-            for i in await self.settings[self.selected_id].items:
-                self.add_item(i)
+            if self.selected_id is not None and self.selected_id in self.settings:
+                try:
+                    items = await self.settings[self.selected_id].items
+                    if items:
+                        for i in items:
+                            if i:  # Ensure the item is not None
+                                self.add_item(i)
+                except Exception as e:
+                    print(f"[ERROR] Failed to build items for setting {self.selected_id}: {str(e)}")
 
-        options = []
-        for setting_id in self.settings:
-            option = await self.settings[setting_id].option
-            if setting_id == self.selected_id:
-                option.default = True
-            options.append(option)
+            options = []
+            if hasattr(self, 'settings'):
+                for setting_id in self.settings:
+                    try:
+                        option = await self.settings[setting_id].option
+                        if option:  # Ensure the option is not None
+                            if setting_id == self.selected_id:
+                                option.default = True
+                            options.append(option)
+                    except Exception as e:
+                        print(f"[ERROR] Failed to get option for setting {setting_id}: {str(e)}")
+                        continue
 
-        parameter_selection = discore.ui.Select(options=options, row=4, placeholder=t('settings.placeholder'))
-        # noinspection PyTypeChecker
-        edit_callback(parameter_selection, self, self.__class__.select_parameter)
-        self.add_item(parameter_selection)
-        return self
+            if options:  # Only create selection if we have options
+                parameter_selection = discore.ui.Select(
+                    options=options,
+                    row=4,
+                    placeholder=t('settings.placeholder')
+                )
+                # noinspection PyTypeChecker
+                edit_callback(parameter_selection, self, self.__class__.select_parameter)
+                self.add_item(parameter_selection)
+            
+            return self
+        except Exception as e:
+            print(f"[ERROR] Failed to build items: {str(e)}")
+            raise
 
     @staticmethod
     async def _message_delete_after(interaction: discore.Interaction, delay: float = 180.0) -> None:
