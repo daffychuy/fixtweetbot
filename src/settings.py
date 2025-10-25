@@ -440,14 +440,16 @@ class TroubleshootingSetting(BaseSetting):
             ('member', self.ctx.member.mention, reply_to_member(self.ctx.guild, self.ctx.member, self.ctx.roles), False),
             ('members', self.ctx.member.mention, self.ctx.member.enabled(self.ctx.guild), True),
         ]
-        options.extend(
-            ('roles', role.mention, role.enabled(self.ctx.guild), True)
-            for role in self.ctx.roles
-        )
-        options.extend(
-            ('keywords', keyword, self.ctx.guild.keywords_use_allow_list, False)
-            for keyword in self.ctx.guild.keywords
-        )
+        if self.ctx.roles:
+            options.extend(
+                ('roles', role.mention, role.enabled(self.ctx.guild), True)
+                for role in self.ctx.roles
+            )
+        if self.ctx.guild and self.ctx.guild.keywords:
+            options.extend(
+                ('keywords', keyword, self.ctx.guild.keywords_use_allow_list, False)
+                for keyword in self.ctx.guild.keywords
+            )
 
         str_options_fields = group_join(
             (
