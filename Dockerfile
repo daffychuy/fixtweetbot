@@ -1,6 +1,6 @@
 # Step 1: Builder
 
-FROM python:3.14-alpine AS builder
+FROM python:3.14-slim AS builder
 WORKDIR /usr/local/app
 
 COPY ./ ./
