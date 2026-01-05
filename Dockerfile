@@ -1,35 +1,30 @@
 # Step 1: Builder
-
 FROM python:3.14-slim AS builder
 WORKDIR /usr/local/app
 
 COPY ./ ./
 
-RUN apk add --no-cache git linux-headers libffi-dev openssl-dev cargo rust
-RUN python -m venv /usr/local/venv && . /usr/local/venv/bin/activate
-RUN /usr/local/venv/bin/pip install --no-cache-dir -r requirements.txt && \
-    /usr/local/venv/bin/pip install --no-cache-dir cryptography
+RUN apt-get update && apt-get install -y git build-essential libffi-dev libssl-dev python3-dev \
+    && python -m venv /usr/local/venv \
+    && /usr/local/venv/bin/pip install --upgrade pip wheel setuptools
+
+# Install dependencies
+RUN /usr/local/venv/bin/pip install --no-cache-dir -r requirements.txt \
+    && /usr/local/venv/bin/pip install --no-cache-dir cryptography
 
 # Step 2: Final image
-
-FROM python:3.14-alpine
+FROM python:3.14-slim
 WORKDIR /usr/local/app
 
+ENV PATH="/usr/local/venv/bin:$PATH"
 ENV USR=app
 ENV GRP=$USR
 ENV UID=1000
 ENV GID=1000
 
-ENV PATH="/usr/local/venv/bin:$PATH"
-ENV DISCORE_CONFIG=/usr/local/app/docker.config.yml
-ENV DATABASE_DRIVER="mysql"
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONDONTWRITEBYTECODE=1
-
-RUN apk add --no-cache netcat-openbsd
-
-RUN addgroup --gid "$GID" $GRP && \
-    adduser --disabled-password --no-create-home --home "$(pwd)" --uid "$UID" --ingroup "$GRP" $USR
+RUN apt-get update && apt-get install -y netcat \
+    && addgroup --gid "$GID" $GRP \
+    && adduser --disabled-password --home "$(pwd)" --uid "$UID" --ingroup "$GRP" $USR
 
 COPY --from=builder /usr/local/venv /usr/local/venv
 COPY --from=builder /usr/local/app /usr/local/app
