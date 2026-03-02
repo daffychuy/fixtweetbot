@@ -1,21 +1,25 @@
+import asyncio
+import contextvars
 import inspect
-from typing import TypeVar, Any, Optional, Iterable, Protocol, Generic
+import logging
+import traceback as tb
+from typing import TypeVar, Any, Iterable, Protocol, Generic, Awaitable
 
 import aiohttp
-from i18n import *
-import i18n
-from i18n.translator import TranslationFormatter, pluralize
-
-from discord.app_commands import locale_str
 import discore
+import i18n
+from discord.app_commands import locale_str
+from discord.context_managers import Typing as _Typing, _typing_done_callback
+from i18n import *
+from i18n.translator import TranslationFormatter, pluralize
 
 from database.models.DiscordRepresentation import DiscordRepresentation
 
 __all__ = (
     't', 'translate', 'object_format', 'edit_callback', 'is_premium',
     'is_sku', 'format_perms', 'is_missing_perm', 'I18nTranslator', 'tstr',
-    'group_join', 'l', 'GuildChild', 'HybridElement', 'reply_to_member',
-    'session'
+    'group_join', 'group_items', 'l', 'GuildChild', 'HybridElement', 'reply_to_member',
+    'session', 'safe_send_coro', 'entrypoint_context', 'Typing'
 )
 
 from database.models.Guild import Guild
@@ -23,7 +27,13 @@ from database.models.Guild import Guild
 from database.models.Member import Member
 from database.models.Role import Role
 
-session: Optional[aiohttp.ClientSession] = None
+session: aiohttp.ClientSession | None = None
+
+_logger = logging.getLogger(__name__)
+
+entrypoint_context: contextvars.ContextVar[str | None] = contextvars.ContextVar('entrypoint_context', default=None)
+
+T = TypeVar('T')
 
 def t(key, **kwargs):
     """
@@ -85,7 +95,7 @@ def object_format(object, **kwargs):
     return object
 
 
-V = TypeVar('V', bound='discore.ui.View', covariant=True)
+V = TypeVar('V', bound='discore.ui.View')
 I = TypeVar('I', bound='discore.ui.Item[discore.ui.View]')
 
 
@@ -105,7 +115,7 @@ def edit_callback(item: I, view: V, callback: discore.ui.item.ItemCallbackType[A
     return item
 
 
-def is_premium(i: discore.Interaction) -> Optional[bool]:
+def is_premium(i: discore.Interaction) -> bool | None:
     """
     Check if the user is premium
     :param i: The interaction
@@ -163,9 +173,9 @@ def format_perms(
         if include_valid or not getattr(channel_permissions, perm)
     ])
     if include_label and str_perms:
-        return t(
+        return str(t(
             'settings.perms.label' if include_valid else 'settings.perms.missing_label',
-            channel=channel.mention) + str_perms
+            channel=channel.mention)) + str_perms
     return str_perms
 
 def is_missing_perm(perms: Iterable[str], channel: discore.TextChannel | discore.Thread) -> bool:
@@ -184,9 +194,7 @@ def is_missing_perm(perms: Iterable[str], channel: discore.TextChannel | discore
 
 
 class I18nTranslator(discore.app_commands.Translator):
-    """
-    A translator that uses the i18n module
-    """
+    """A translator that uses the i18n module"""
 
     async def translate(self, locale_str: discore.app_commands.locale_str, locale: discore.Locale, _):
         # noinspection PyUnresolvedReferences
@@ -204,32 +212,39 @@ def tstr(key: str, **kwargs) -> locale_str:
 
     return locale_str(t(key, locale=i18n.config.get('fallback'), **kwargs), key=key, **kwargs)
 
-def group_join(l: Iterable[str], max_group_size: int, sep: str = "\n") -> list[str]:
+
+def group_items(items: Iterable[T], max_group_size: int, sep: str = "\n") -> list[tuple[str, list[T]]]:
     """
-    Group items from a list into strings based on a maximum group size and a separator.
+    Group items based on their string representation while maintaining reference to original items.
 
-    This function takes a list of strings and combines them into groups of strings, where each group
-    contains up to a specified maximum number of characters. Groups are formed by concatenating items
-    from the list with a specified separator. This is useful for formatting output or preparing
-    blocks of text with size constraints.
+    :param items: The items to group.
+    :param max_group_size: The maximum allowed size (in characters) for each group.
+    :param sep: The separator to use between items in a group.
+    :return: A list of tuples (grouped_string, list_of_original_items).
+    """
+    groups: list[tuple[str, list[T]]] = []
+    for item in items:
+        item_str = str(item)
+        if not groups:
+            groups.append((item_str, [item]))
+        elif len(groups[-1][0]) + len(sep) + len(item_str) <= max_group_size:
+            groups[-1] = (groups[-1][0] + sep + item_str, groups[-1][1] + [item])
+        else:
+            groups.append((item_str, [item]))
+    return groups
 
-    :param l: The list of strings to group.
+
+def group_join(strings: Iterable[str], max_group_size: int, sep: str = "\n") -> list[str]:
+    """
+    Group strings based on a maximum group size and a separator.
+    Wrapper around group_items for simple string grouping.
+
+    :param strings: The list of strings to group.
     :param max_group_size: The maximum allowed size (in characters) for each group.
     :param sep: The separator to use between items in a group. Default is a newline character.
-    :return: A list of grouped strings, each string formed by concatenating items from the input
-             list while adhering to the maximum group size constraint.
+    :return: A list of grouped strings.
     """
-
-    groups = list[str]()
-    for item in l:
-        if not groups:
-            groups.append(item)
-        elif len(groups[-1]) + len(sep) + len(item) <= max_group_size:
-            groups[-1] += sep + item
-        else:
-            groups.append(item)
-
-    return groups
+    return [group for group, _ in group_items(strings, max_group_size, sep)]
 
 def l(e: Any) -> str:
     """
@@ -241,10 +256,73 @@ def l(e: Any) -> str:
 
     return str(e).lower()
 
+async def safe_send_coro(
+        coro: Awaitable[T],
+        rate_limit: bool = True,
+        invalid_form_body: bool | str | Iterable[str] = False,
+        not_found: bool = False,
+        forbidden: bool = False,
+        status_codes: Iterable[int] = (),
+        error_codes: Iterable[int] = (),
+) -> tuple[bool, T | None]:
+    """
+    Safely send a coroutine, catching common exceptions.
+
+    :param coro: The coroutine to send.
+    :param rate_limit: Whether to catch rate limit exceptions.
+    :param invalid_form_body: Whether to catch invalid form body exceptions,
+        or a specific error message to catch.
+    :param not_found: Whether to catch not found exceptions.
+    :param forbidden: Whether to catch forbidden exceptions.
+    :param status_codes: An iterable of HTTP status codes to catch.
+    :param error_codes: An iterable of Discord json error codes to catch.
+    :return: A tuple where the first element is a boolean indicating success,
+    and the second element is the result of the coroutine or None if it failed.
+    """
+
+    try:
+        return True, await coro
+    except discore.HTTPException as e:
+        msg: str
+        log_level: int = logging.DEBUG
+        notify_channel: bool = False
+        context_text = f"Context:\n```\n{entrypoint_context.get()!r}\n```"
+        error_text = f"Error:\n```\n{e.text!r}\n```"
+
+        if rate_limit and e.status == 429:
+            msg = f"Failed to send coroutine due to rate limiting.\n{context_text}"
+            log_level, notify_channel = logging.WARNING, True
+        elif not_found and isinstance(e, discore.NotFound):
+            msg = f"Failed to send coroutine due to NotFound error.\n{context_text}\n{error_text}"
+        elif forbidden and isinstance(e, discore.Forbidden):
+            msg = f"Failed to send coroutine due to Forbidden error.\n{context_text}\n{error_text}"
+            log_level, notify_channel = logging.WARNING, True
+        elif (invalid_form_body and e.code == 50035
+              and (invalid_form_body is True
+                   or (isinstance(invalid_form_body, str) and invalid_form_body in e.text)
+                   or (not isinstance(invalid_form_body, str) and any(err_msg in e.text for err_msg in invalid_form_body))
+              )):
+            msg = f"Failed to send coroutine due to invalid form body.\n{context_text}\n{error_text}"
+        elif e.status in status_codes:
+            msg = f"Failed to send coroutine due to HTTP status {e.status}.\n{context_text}\n{error_text}"
+        elif e.code in error_codes:
+            msg = f"Failed to send coroutine due to HTTP error code {e.code}.\n{context_text}\n{error_text}"
+        else:
+            raise
+
+        _logger.log(log_level, msg.replace('\n', ' '), stack_info=True)
+
+        if notify_channel:
+            bot: discore.Bot = discore.Bot.get()
+            traceback_str = "".join(tb.format_tb(e.__traceback__)) + "".join(tb.format_exception_only(type(e), e))
+            msg_content = f"{msg}\n\n```\n{discore.sanitize(traceback_str, 1990 - len(msg), replace_newline=False)}\n```"
+            await bot.get_channel(discore.config.log.channel).send(msg_content)
+
+        return False, None
+
+
 class GuildChild(Protocol):
-    """
-    Protocol for Discord objects that are children of a guild.
-    """
+    """Protocol for Discord objects that are children of a guild."""
 
     guild: discore.Guild
     id: int
@@ -253,9 +331,7 @@ D = TypeVar('D', bound=discore.abc.Snowflake)
 M = TypeVar('M', bound=DiscordRepresentation)
 
 class HybridElement(Generic[D, M]):
-    """
-    A class that combines a Discord object and a database model.
-    """
+    """A class that combines a Discord object and a database model."""
 
     def __init__(self, discord_object: D, model_class: type[M], **kwargs: Any):
         self.discord_object: D = discord_object
@@ -290,6 +366,7 @@ class HybridElement(Generic[D, M]):
         return super().__getattr__(name)
 
     def __eq__(self, other: object) -> bool:
+        # noinspection PyUnresolvedReferences
         if hasattr(other, 'id') and self.id == other.id:
             return True
         return False
@@ -318,6 +395,7 @@ class HybridElement(Generic[D, M]):
         return f"{self.__class__.__name__}(discord_object={self.discord_object!r}, db_object={self.db_object!r})"
 
     def __getitem__(self, item):
+        # noinspection PyUnresolvedReferences
         return self.db_object[item]
 
 def reply_to_member(
@@ -339,3 +417,23 @@ def reply_to_member(
     if not (any if guild.roles_use_any_rule else all)(r.enabled(guild) for r in roles):
         return False
     return True
+
+class Typing(_Typing):
+    async def wrapped_typer(self) -> None:
+        channel = await self._get_channel()
+        await safe_send_coro(channel._state.http.send_typing(channel.id))
+
+    async def __aenter__(self) -> None:
+        channel = await self._get_channel()
+        await safe_send_coro(channel._state.http.send_typing(channel.id))
+        self.task: asyncio.Task[None] = self.loop.create_task(self.do_typing())
+        # noinspection PyTypeChecker
+        self.task.add_done_callback(_typing_done_callback)
+
+    async def do_typing(self) -> None:
+        channel = await self._get_channel()
+        typing = channel._state.http.send_typing
+
+        while True:
+            await asyncio.sleep(5)
+            await safe_send_coro(typing(channel.id))

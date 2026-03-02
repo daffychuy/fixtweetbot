@@ -1,14 +1,17 @@
 """
 Allows fixing links from various websites.
 """
-import asyncio
+import logging
 import re
-from typing import Optional, Self, Type, Iterable, Callable
+from typing import Type, Iterable, Callable
 
+from database.models.Event import *
 from database.models.Guild import *
 from src import utils
 
 __all__ = ('WebsiteLink', 'websites')
+
+_logger = logging.getLogger(__name__)
 
 
 def call_if_valid(func: Callable) -> Callable:
@@ -35,25 +38,36 @@ def call_if_valid(func: Callable) -> Callable:
     return wrapper
 
 class WebsiteLink:
-    """
-    Base class for all websites.
-    """
+    """Base class for all websites."""
 
     id: str
 
-    def __init__(self, guild: Guild, url: str) -> None:
+    def __init__(self, guild: Guild, url: str, spoiler: bool = False) -> None:
         """
         Initialize the website.
 
         :param guild: The guild where the link has been sent
         :param url: The URL to fix
+        :param spoiler: Whether the link should be rendered as a spoiler
         """
 
         self.guild: Guild = guild
         self.url: str = url
+        self.spoiler: bool = spoiler
+        self._rendered: str | None = None
+
+    def __str__(self) -> str:
+        """
+        Return the rendered link.
+        
+        Note: render() must be called before using str() on a WebsiteLink.
+        """
+        if self._rendered is None:
+            raise RuntimeError("render() must be called before str()")
+        return self._rendered
 
     @classmethod
-    def if_valid(cls, *args, **kwargs) -> Optional[Self]:
+    def if_valid(cls, *args, **kwargs) -> Self | None:
         """
         Return a website if the URL is valid.
 
@@ -75,7 +89,7 @@ class WebsiteLink:
         raise NotImplementedError
 
     @call_if_valid
-    async def get_fixed_url(self) -> tuple[Optional[str], Optional[str]]:
+    async def get_fixed_url(self) -> tuple[str | None, str | None]:
         """
         Get the fixed link and its hypertext label.
         :return: The fixed link and its hypertext label
@@ -83,7 +97,7 @@ class WebsiteLink:
         raise NotImplementedError
 
     @call_if_valid
-    async def get_author_url(self) -> tuple[Optional[str], Optional[str]]:
+    async def get_author_url(self) -> tuple[str | None, str | None]:
         """
         Get the author link and its hypertext label.
         :return: The author link and its hypertext label
@@ -91,7 +105,7 @@ class WebsiteLink:
         raise NotImplementedError
 
     @call_if_valid
-    async def get_original_url(self) -> tuple[Optional[str], Optional[str]]:
+    async def get_original_url(self) -> tuple[str | None, str | None]:
         """
         Get the original link and its hypertext label.
         :return: The original link and its hypertext label
@@ -99,12 +113,16 @@ class WebsiteLink:
         raise NotImplementedError
 
     @call_if_valid
-    async def render(self) -> Optional[str]:
+    async def render(self) -> str | None:
         """
-        Render the fixed link according to the guild's settings and the context
+        Render the fixed link according to the guild's settings and the context.
+        The result is cached in _rendered for subsequent calls.
 
         :return: The rendered fixed link
         """
+
+        if self._rendered is not None:
+            return self._rendered
 
         fixed_url, fixed_label = await self.get_fixed_url()
         if not fixed_url:
@@ -115,48 +133,52 @@ class WebsiteLink:
         if author_url:
             fixed_link += f" • [{author_label}](<{author_url}>)"
         fixed_link += f" • [{fixed_label}]({fixed_url})"
-        return fixed_link
+
+        if self.spoiler:
+            fixed_link = f"||{fixed_link} ||"
+
+        self._rendered = fixed_link
+        return self._rendered
 
 
 class GenericWebsiteLink(WebsiteLink):
-    """
-    Represents a generic website link.
-    """
+    """Represents a generic website link."""
 
     id: str
     hypertext_label: str
     fixer_name: str
     fix_domain: str
-    subdomains: Optional[dict[str, str]] = None
+    subdomains: dict[str, str] | None = None
     is_translation: bool = False
     routes: dict[str, re.Pattern[str]] = {}
 
-    def __init__(self, guild: Guild, url: str) -> None:
+    def __init__(self, guild: Guild, url: str, spoiler: bool = False) -> None:
         """
         Initialize the website.
 
-        :param url: the URL of the website
         :param guild: the guild where the link check is happening
-        :return: None
+        :param url: the URL of the website
+        :param spoiler: Whether the link should be rendered as a spoiler
         """
 
-        super().__init__(guild, url)
+        super().__init__(guild, url, spoiler)
         self.match, self.repl = self.get_match_and_repl()
 
     @classmethod
-    def if_valid(cls, guild: Guild, url: str) -> Optional[Self]:
+    def if_valid(cls, guild: Guild, url: str, spoiler: bool = False) -> Self | None:
         """
         Return a website if the URL is valid.
 
         :param guild: the guild where the link check is happening
         :param url: the URL to check
+        :param spoiler: Whether the link should be rendered as a spoiler
         :return: the website if the URL is valid, None otherwise
         """
 
         if not guild[cls.id]:
             return None
 
-        website = cls(guild, url)
+        website = cls(guild, url, spoiler)
         return website if website.is_valid() else None
 
     def is_valid(self) -> bool:
@@ -167,6 +189,7 @@ class GenericWebsiteLink(WebsiteLink):
         Generate a replacement for the corresponding route, with named groups.
         :param route: the route to generate the replacement for
         :param match: the match for the corresponding route
+        :return: the generated replacement
         """
 
         if route[0] != '/':
@@ -209,10 +232,11 @@ class GenericWebsiteLink(WebsiteLink):
     def route_fix_subdomain(self) -> str:
         if not self.subdomains:
             return ''
+        # noinspection PyTypeChecker
         return self.subdomains[self.guild[f"{self.id}_view"]]
 
 
-    def get_match_and_repl(self) -> tuple[Optional[re.Match[str]], Optional[str]]:
+    def get_match_and_repl(self) -> tuple[re.Match[str] | None, str | None]:
         """
         Get the match for the fixed link, if any, and generate a replacement for the corresponding route.
 
@@ -240,7 +264,7 @@ class GenericWebsiteLink(WebsiteLink):
         return patched_url
 
     @call_if_valid
-    async def get_fixed_url(self) -> tuple[Optional[str], Optional[str]]:
+    async def get_fixed_url(self) -> tuple[str | None, str | None]:
         fixed_url = self.get_patched_url(
             self.fix_domain,
             self.route_fix_subdomain(),
@@ -249,7 +273,7 @@ class GenericWebsiteLink(WebsiteLink):
         return fixed_url, self.fixer_name
 
     @call_if_valid
-    async def get_author_url(self) -> tuple[Optional[str], Optional[str]]:
+    async def get_author_url(self) -> tuple[str | None, str | None]:
         if not ('username' in self.match.groupdict() and self.match['username']):
             return None, None
         username = self.match["username"]
@@ -257,7 +281,7 @@ class GenericWebsiteLink(WebsiteLink):
         return user_link, username
 
     @call_if_valid
-    async def get_original_url(self) -> tuple[Optional[str], Optional[str]]:
+    async def get_original_url(self) -> tuple[str | None, str | None]:
         subdomain = ""
         if self.match['subdomain'] and self.match['subdomain'] != 'www':
             subdomain = self.match['subdomain'] + '.'
@@ -265,7 +289,7 @@ class GenericWebsiteLink(WebsiteLink):
         return original_url, self.hypertext_label
 
 
-def generate_regex(domain_names: str|list[str], route: str, params: Optional[list[str]] = None) -> re.Pattern[str]:
+def generate_regex(domain_names: str|list[str], route: str, params: list[str] | None = None) -> re.Pattern[str]:
     """
     Generate a regex for the corresponding route, with named groups.
     :param domain_names: the domain name to generate the regex for
@@ -296,7 +320,7 @@ def generate_regex(domain_names: str|list[str], route: str, params: Optional[lis
     return re.compile(r"https?://(?:(?P<subdomain>[^.]+)\.)?" + domain_regex + route_regex + query_string_regex + r"(?:#.+)?", re.IGNORECASE)
 
 
-def generate_routes(domain_names: str|list[str], routes: dict[str, Optional[list[str]]]) -> dict[str, re.Pattern[str]]:
+def generate_routes(domain_names: str|list[str], routes: dict[str, list[str] | None]) -> dict[str, re.Pattern[str]]:
     """
     Generate regexes for the corresponding routes, with named groups.
     :param domain_names: the domain name to generate the regexes for
@@ -318,7 +342,7 @@ class EmbedEZLink(GenericWebsiteLink):
     }
     is_translation = True
 
-    async def get_fixed_url(self) -> tuple[Optional[str], Optional[str]]:
+    async def get_fixed_url(self) -> tuple[str | None, str | None]:
         subdomain = ""
         if self.match['subdomain'] and self.match['subdomain'] != 'www':
             subdomain = self.match['subdomain'] + '.'
@@ -327,17 +351,19 @@ class EmbedEZLink(GenericWebsiteLink):
         try:
             async with utils.session.get("https://embedez.com/api/v1/providers/combined", params={'q': prepared_url}) as response:
                 if response.status != 200:
+                    _logger.warning("EmbedEZ request error for link: %s (status code: %d, body: %s)", prepared_url, response.status, await response.text())
+                    await Event.buff_cr({'name': 'embedez_fixer_error', 'data': {'link': prepared_url, 'status_code': response.status, 'response_body': await response.text()}})
                     return None, None
                 search_hash = (await response.json())['data']['key']
                 return f"https://embedez.com/embed/{search_hash}", self.fixer_name
         except asyncio.TimeoutError:
+            _logger.warning("EmbedEZ request timeout for link: %s", prepared_url)
+            await Event.buff_cr({'name': 'embedez_fixer_timeout', 'data': {'link': prepared_url}})
             return None, None
 
 
 class TwitterLink(GenericWebsiteLink):
-    """
-    Twitter website.
-    """
+    """Twitter website."""
 
     id = 'twitter'
     hypertext_label = 'Tweet'
@@ -353,15 +379,14 @@ class TwitterLink(GenericWebsiteLink):
     routes = generate_routes(
         ["twitter.com", "x.com", "nitter.net", "xcancel.com", "nitter.poast.org", "nitter.privacyredirect.com", "lightbrd.com", "nitter.space", "nitter.tiekoetter.com"],
         {
+            "/i/status/:id": None,
             "/:username/status/:id": None,
             "/:username/status/:id/:media_type(photo|video)/:media_id": None,
     })
 
 
 class InstagramLink(GenericWebsiteLink):
-    """
-    Instagram website.
-    """
+    """Instagram website."""
 
     id = 'instagram'
     hypertext_label = 'Instagram'
@@ -375,17 +400,22 @@ class InstagramLink(GenericWebsiteLink):
             "/:media_type(p|reels?)/:id": ['img_index'],
             "/:username/:media_type(p|reels?)/:id": ['img_index'],
     })
+    params = {
+        InstagramView.DIRECT_MEDIA: 'direct',
+        InstagramView.GALLERY: 'gallery',
+    }
 
     def get_repl(self, route: str, match: re.Match[str]) -> str:
-        if route == "/share/:id":
-            route = "/share/p/:id"
-        return super().get_repl(route, match)
+        repl = super().get_repl(route, match)
+        view = self.guild[f"{self.id}_view"]
+        if view in self.params:
+            sep = '&' if '?' in repl else '?'
+            repl += f"{sep}{self.params[view]}=true"
+        return repl
 
 
 class TikTokLink(GenericWebsiteLink):
-    """
-    Tiktok website.
-    """
+    """Tiktok website."""
 
     id = 'tiktok'
     hypertext_label = 'Tiktok'
@@ -406,9 +436,7 @@ class TikTokLink(GenericWebsiteLink):
 
 
 class RedditLink(GenericWebsiteLink):
-    """
-    Reddit website.
-    """
+    """Reddit website."""
 
     id = 'reddit'
     hypertext_label = 'Reddit'
@@ -424,9 +452,7 @@ class RedditLink(GenericWebsiteLink):
 
 
 class ThreadsLink(GenericWebsiteLink):
-    """
-    Threads website.
-    """
+    """Threads website."""
 
     id = 'threads'
     hypertext_label = 'Threads'
@@ -440,9 +466,7 @@ class ThreadsLink(GenericWebsiteLink):
 
 
 class BlueskyLink(GenericWebsiteLink):
-    """
-    Bluesky website.
-    """
+    """Bluesky website."""
 
     id = 'bluesky'
     hypertext_label = 'Bluesky'
@@ -462,9 +486,7 @@ class BlueskyLink(GenericWebsiteLink):
 
 
 class SnapchatLink(EmbedEZLink):
-    """
-    Snapchat website.
-    """
+    """Snapchat website."""
 
     id = 'snapchat'
     hypertext_label = 'Snapchat'
@@ -473,13 +495,12 @@ class SnapchatLink(EmbedEZLink):
         {
             "/p/:id1/:id2/:id3?": None,
             "/spotlight/:id": None,
+            "/@:username/spotlight/:hash": None,
     })
 
 
 class FacebookLink(GenericWebsiteLink):
-    """
-    Facebook website.
-    """
+    """Facebook website."""
 
     id = 'facebook'
     hypertext_label = 'Facebook'
@@ -489,9 +510,10 @@ class FacebookLink(GenericWebsiteLink):
         "facebook.com",
         {
             "/:username/:type(posts|videos)/:slug?/:hash": None,
-            "/share/:type(v|r|p)/:hash": None,
+            "/share/:type(v|r|p)?/:hash": None,
             "/reel/:id": None,
             "/photo": ['fbid'],
+            "/photo.php": ['fbid'],
             "/watch": ['v'],
             "/story.php": ['story_fbid', 'id'],
             "/permalink.php": ['story_fbid', 'id'],
@@ -501,9 +523,7 @@ class FacebookLink(GenericWebsiteLink):
 
 
 class PixivLink(GenericWebsiteLink):
-    """
-    Pixiv website.
-    """
+    """Pixiv website."""
 
     id = 'pixiv'
     hypertext_label = 'Pixiv'
@@ -518,9 +538,7 @@ class PixivLink(GenericWebsiteLink):
 
 
 class TwitchLink(GenericWebsiteLink):
-    """
-    Twitch website.
-    """
+    """Twitch website."""
 
     id = 'twitch'
     hypertext_label = 'Twitch'
@@ -534,9 +552,7 @@ class TwitchLink(GenericWebsiteLink):
 
 
 class SpotifyLink(GenericWebsiteLink):
-    """
-    Spotify website.
-    """
+    """Spotify website."""
 
     id = 'spotify'
     hypertext_label = 'Spotify'
@@ -550,9 +566,7 @@ class SpotifyLink(GenericWebsiteLink):
 
 
 class DeviantArtLink(GenericWebsiteLink):
-    """
-    DeviantArt website.
-    """
+    """DeviantArt website."""
 
     id = 'deviantart'
     hypertext_label = 'DeviantArt'
@@ -565,10 +579,29 @@ class DeviantArtLink(GenericWebsiteLink):
     })
 
 
+class NewgroundsLink(GenericWebsiteLink):
+    """Newgrounds website."""
+
+    id = 'newgrounds'
+    hypertext_label = 'Newgrounds'
+    fix_domain = 'fixnewgrounds.com'
+    fixer_name = 'FixNewgrounds'
+    routes = generate_routes(
+        "newgrounds.com",
+        {
+            "/art/view/:username/:slug": None,
+        })
+
+    async def get_author_url(self) -> tuple[str | None, str | None]:
+        if not 'username' in self.match.groupdict():
+            return None, None
+        username = self.match['username']
+        user_link = f"https://{username}.newgrounds.com/"
+        return user_link, username
+
+
 class MastodonLink(GenericWebsiteLink):
-    """
-    Mastodon website.
-    """
+    """Mastodon website."""
 
     id = 'mastodon'
     hypertext_label = 'Mastodon'
@@ -580,15 +613,13 @@ class MastodonLink(GenericWebsiteLink):
             "/@:username/:id": None,
     })
 
-    async def get_fixed_url(self) -> tuple[Optional[str], Optional[str]]:
+    async def get_fixed_url(self) -> tuple[str | None, str | None]:
         fixed_url = self.get_patched_url(self.fix_domain + r"/\g<domain>")
         return fixed_url, self.fixer_name
 
 
 class TumblrLink(GenericWebsiteLink):
-    """
-    Tumblr website.
-    """
+    """Tumblr website."""
 
     id = 'tumblr'
     hypertext_label = 'Tumblr'
@@ -601,14 +632,14 @@ class TumblrLink(GenericWebsiteLink):
             "/:username/:id/:slug?": None,
     })
 
-    async def get_fixed_url(self) -> tuple[Optional[str], Optional[str]]:
+    async def get_fixed_url(self) -> tuple[str | None, str | None]:
         subdomain = ''
         if self.match['subdomain'] and self.match['subdomain'] != 'www':
             subdomain = r"\g<subdomain>."
         fixed_url = self.get_patched_url(self.fix_domain, subdomain)
         return fixed_url, self.fixer_name
 
-    async def get_author_url(self) -> tuple[Optional[str], Optional[str]]:
+    async def get_author_url(self) -> tuple[str | None, str | None]:
         username = self.match['username'] \
             if 'username' in self.match.groupdict() else self.match['subdomain']
         if not username or username == "www":
@@ -618,9 +649,7 @@ class TumblrLink(GenericWebsiteLink):
 
 
 class BiliBiliLink(GenericWebsiteLink):
-    """
-    BiliBili website.
-    """
+    """BiliBili website."""
 
     id = 'bilibili'
     hypertext_label = 'BiliBili'
@@ -641,7 +670,7 @@ class BiliBiliLink(GenericWebsiteLink):
             "/m/detail/:id": None,
         })
 
-    async def get_fixed_url(self) -> tuple[Optional[str], Optional[str]]:
+    async def get_fixed_url(self) -> tuple[str | None, str | None]:
         subdomain = ""
         if self.match['subdomain'] and self.match['subdomain'] not in ('www', 'm'):
             subdomain = self.match['subdomain'] + '.'
@@ -650,9 +679,7 @@ class BiliBiliLink(GenericWebsiteLink):
 
 
 class IFunnyLink(EmbedEZLink):
-    """
-    IFunny website.
-    """
+    """IFunny website."""
 
     id = 'ifunny'
     hypertext_label = 'IFunny'
@@ -664,9 +691,7 @@ class IFunnyLink(EmbedEZLink):
 
 
 class FurAffinityLink(GenericWebsiteLink):
-    """
-    FurAffinity website.
-    """
+    """FurAffinity website."""
 
     id = 'furaffinity'
     hypertext_label = 'Fur Affinity'
@@ -680,9 +705,7 @@ class FurAffinityLink(GenericWebsiteLink):
 
 
 class YouTubeLink(GenericWebsiteLink):
-    """
-    YouTube website.
-    """
+    """YouTube website."""
 
     id = 'youtube'
     hypertext_label = 'YouTube'
@@ -699,9 +722,7 @@ class YouTubeLink(GenericWebsiteLink):
 
 
 class ImgurLink(EmbedEZLink):
-    """
-    Imgur website.
-    """
+    """Imgur website."""
 
     id = 'imgur'
     hypertext_label = 'Imgur'
@@ -714,9 +735,7 @@ class ImgurLink(EmbedEZLink):
 
 
 class WeiboLink(EmbedEZLink):
-    """
-    Weibo website.
-    """
+    """Weibo website."""
 
     id = 'weibo'
     hypertext_label = 'Weibo'
@@ -728,9 +747,7 @@ class WeiboLink(EmbedEZLink):
 
 
 class GelbooruLink(EmbedEZLink):
-    """
-    Every Gelbooru websites.
-    """
+    """Every Gelbooru websites."""
 
     id = 'imageboards'
     is_translation = False
@@ -749,9 +766,7 @@ class GelbooruLink(EmbedEZLink):
 
 
 class DanbooruLink(EmbedEZLink):
-    """
-    Every Danbooru websites.
-    """
+    """Every Danbooru websites."""
 
     id = 'imageboards'
     is_translation = False
@@ -763,9 +778,7 @@ class DanbooruLink(EmbedEZLink):
         })
 
 class E621ngLink(EmbedEZLink):
-    """
-    Every e621ng websites.
-    """
+    """Every e621ng websites."""
 
     id = 'imageboards'
     is_translation = False
@@ -782,9 +795,7 @@ class E621ngLink(EmbedEZLink):
 
 
 class MoebooruLink(EmbedEZLink):
-    """
-    Every Moebooru websites.
-    """
+    """Every Moebooru websites."""
 
     id = 'imageboards'
     is_translation = False
@@ -803,9 +814,7 @@ class MoebooruLink(EmbedEZLink):
 
 
 class PhilomenaLink(EmbedEZLink):
-    """
-    Every Philomena websites.
-    """
+    """Every Philomena websites."""
 
     id = 'imageboards'
     is_translation = False
@@ -818,9 +827,7 @@ class PhilomenaLink(EmbedEZLink):
 
 
 class ShimieLink(EmbedEZLink):
-    """
-    Every Shimie websites.
-    """
+    """Every Shimie websites."""
 
     id = 'imageboards'
     is_translation = False
@@ -832,18 +839,28 @@ class ShimieLink(EmbedEZLink):
         })
 
 
+class PinterestLink(EmbedEZLink):
+    """Pinterest website."""
+
+    id = 'pinterest'
+    hypertext_label = 'Pinterest'
+    routes = generate_routes(
+        "pinterest.com",
+        {
+            "/pin/:id": None,
+    })
+
+
 class CustomLink(WebsiteLink):
-    """
-    Custom website.
-    """
+    """Custom website."""
 
     id = 'custom'
 
-    def __init__(self, guild: Guild, url: str) -> None:
-        super().__init__(guild, url)
-        self.fixed_link: Optional[str] = None
-        self.hypertext_label: Optional[str] = None
-        self.fixer_domain: Optional[str] = None
+    def __init__(self, guild: Guild, url: str, spoiler: bool = False) -> None:
+        super().__init__(guild, url, spoiler)
+        self.fixed_link: str | None = None
+        self.hypertext_label: str | None = None
+        self.fixer_domain: str | None = None
 
         # noinspection PyTypeChecker
         self.custom_websites: Iterable = guild.custom_websites
@@ -855,19 +872,19 @@ class CustomLink(WebsiteLink):
                 self.fixer_domain = website.fix_domain
 
     @classmethod
-    def if_valid(cls, guild: Guild, url: str) -> Optional[Self]:
+    def if_valid(cls, guild: Guild, url: str, spoiler: bool = False) -> Self | None:
 
         if not guild.custom_websites:
             return None
 
-        self = cls(guild, url)
+        self = cls(guild, url, spoiler)
         return self if self.is_valid() else None
 
     def is_valid(self) -> bool:
         return self.fixed_link is not None
 
     @call_if_valid
-    async def get_fixed_url(self) -> tuple[Optional[str], Optional[str]]:
+    async def get_fixed_url(self) -> tuple[str | None, str | None]:
         if not self.fixed_link:
             return None, None
         fixer_name = self.fixer_domain
@@ -881,11 +898,11 @@ class CustomLink(WebsiteLink):
         return self.fixed_link, fixer_name
 
     @call_if_valid
-    async def get_author_url(self) -> tuple[Optional[str], Optional[str]]:
+    async def get_author_url(self) -> tuple[str | None, str | None]:
         return None, None
 
     @call_if_valid
-    async def get_original_url(self) -> tuple[Optional[str], Optional[str]]:
+    async def get_original_url(self) -> tuple[str | None, str | None]:
         return self.url, self.hypertext_label
 
 
@@ -898,10 +915,12 @@ websites: list[Type[WebsiteLink]] = [
     BlueskyLink,
     SnapchatLink,
     FacebookLink,
+    PinterestLink,
     PixivLink,
     TwitchLink,
     SpotifyLink,
     DeviantArtLink,
+    NewgroundsLink,
     MastodonLink,
     TumblrLink,
     BiliBiliLink,

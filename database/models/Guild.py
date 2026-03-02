@@ -4,11 +4,10 @@ import discore
 from enum import Enum
 from typing import Self
 
-from masoniteorm.models import Model
 from masoniteorm.relationships import has_many
 
 
-__all__ = ('Guild', 'OriginalMessage', 'TwitterView', 'InstagramView', 'TiktokView', 'BlueskyView', 'EmbedEzView')
+__all__ = ('Guild', 'OriginalMessage', 'TwitterView', 'InstagramView', 'TiktokView', 'BlueskyView', 'EmbedEzView', 'GettableEnum')
 
 from database.models.DiscordRepresentation import DiscordRepresentation
 
@@ -36,6 +35,7 @@ class TwitterView(GettableEnum):
 class InstagramView(GettableEnum):
     NORMAL = 'normal'
     DIRECT_MEDIA = 'direct_media'
+    GALLERY = 'gallery'
 
 class TiktokView(GettableEnum):
     NORMAL = 'normal'
@@ -77,6 +77,7 @@ class Guild(DiscordRepresentation):
         'imgur_view': EmbedEzView,
         'weibo_view': EmbedEzView,
         'imageboards_view': EmbedEzView,
+        'pinterest_view': EmbedEzView,
     }
 
     @has_many('id', 'guild_id')

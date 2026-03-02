@@ -92,6 +92,7 @@ settings:
     state:
       "true": "🟢 為 %{element} 啟用%{details}"
       "false": "🔴 為 %{element} 停用%{details}"
+    toggle_bot_premium: "啟用／停用機器人（會員）"
   member:
     state:
       "true": "🟢 作用於 %{element}"
@@ -205,6 +206,8 @@ settings:
     content: "**更改不同網站的設定**\n\n選擇一個網站來編輯它的設定"
   base_website:
     description: "更改 %{name} 連結的設定"
+    content: "**啟用／停用 %{name} 的連結及管理選項**\n%{state}%{view}\n-# 鳴謝：%{credits}"
+    credits_separator: "、"
     view:
       normal:
         label: "一般顯示"
@@ -277,7 +280,7 @@ misc:
     ## 功能與亮點
 
     - 支援 Twitter、Nitter、Instagram、TikTok、Reddit、Threads、Bluesky、Snapchat、Facebook、Pixiv、Twitch、Spotify,
-      DeviantArt、Mastodon、Tumblr、BiliBili、IFunny、Fur Affinity、YouTube、Imgur、Weibo,
+      DeviantArt、Newgrounds、Mastodon、Tumblr、BiliBili、Pinterest、IFunny、Fur Affinity、YouTube、Imgur、Weibo,
       Rule34.xxx、Danbooru、Gelbooru、e621、e926、Realbooru、Hypnohub、Konachan、Yande.re,
       Derpibooru、Rule34.paheal、XBooru、TBIB 以及您設定的任何自訂網站
     - 推文翻譯

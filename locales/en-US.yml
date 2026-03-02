@@ -287,8 +287,8 @@ misc:
     ## Features & Highlights
 
     - Supports Twitter, Nitter, Instagram, TikTok, Reddit, Threads, Bluesky, Snapchat, Facebook,
-      Pixiv, Twitch, Spotify, DeviantArt, Mastodon, Tumblr, BiliBili, IFunny, YouTube, Imgur, Weibo,
-      Fur Affinity, Rule34.xxx, Danbooru, Gelbooru, e621, e926, Realbooru, Hypnohub, Konachan, Yande.re,
+      Pixiv, Twitch, Spotify, DeviantArt, Newgrounds, Mastodon, Tumblr, BiliBili, Pinterest, IFunny, YouTube, Imgur,
+      Weibo, Fur Affinity, Rule34.xxx, Danbooru, Gelbooru, e621, e926, Realbooru, Hypnohub, Konachan, Yande.re,
       Derpibooru, Rule34.paheal, XBooru, TBIB, and any custom websites of your choice
       and any custom websites of your choice
     - Posts translation
@@ -306,7 +306,7 @@ misc:
     Simply send a message containing a compatible social media link, and the bot will remove the embed if any and
     automatically repost it as a 'fixed' link.
 
-    You also can ignore a link by putting it between `<` and `>`, like this: `<https://twitter.com/...>`.
+    You can also ignore a link by adding "fxignore" to your message: the normal embed will be kept as is.
 
     You can manage the bot's settings with the `/settings` command.
 
